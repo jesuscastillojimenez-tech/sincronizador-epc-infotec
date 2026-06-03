@@ -10,7 +10,6 @@ st.set_page_config(page_title="Sincronizador EPC",
 # 🔒 SISTEMA DE CONTROL DE ACCESO (GATEKEEPER)
 # =====================================================================
 
-
 def check_password():
     """Devuelve True si el usuario ingresó la contraseña correcta."""
     if "autenticado" not in st.session_state:
@@ -26,7 +25,6 @@ def check_password():
         st.markdown("<div style='text-align: center;'>",
                     unsafe_allow_html=True)
 
-        # 👇 CORRECCIÓN AQUÍ: Jalamos el logo que ya está en GitHub
         st.image("logo.png", width=180)
 
         st.markdown(
@@ -50,12 +48,10 @@ def check_password():
 
     return False
 
-
 # =====================================================================
 # 🚀 FLUJO PRINCIPAL PROTEGIDO (UX/UI REDISEÑADA)
 # =====================================================================
 if check_password():
-    # ... [Resto de tu código principal sigue igual] ...
 
     # Encabezado Minimalista
     st.markdown("<br>", unsafe_allow_html=True)
@@ -77,7 +73,7 @@ if check_password():
         )
 
         if archivo:
-            # 2. Feedback rápido y limpio (Sin mostrar DataFrames gigantes)
+            # 2. Feedback rápido y limpio
             df = pd.read_csv(archivo) if archivo.name.endswith(
                 '.csv') else pd.read_excel(archivo)
 
@@ -92,7 +88,7 @@ if check_password():
             # 3. Botón de Acción Principal
             if st.button("🚀 Iniciar Inyección en la Nube", type="primary", use_container_width=True):
 
-                # 4. Estado de progreso dinámico (Mucho más elegante que un spinner estático)
+                # 4. Estado de progreso dinámico
                 with st.status("Procesando lote de datos...", expanded=True) as status:
 
                     st.write("Conectando con Google Workspace API...")
@@ -103,11 +99,10 @@ if check_password():
                         df_limpio = limpiar_datos(df)
                         df_mapeado = aplicar_mapeo_estatico(df_limpio)
 
-                        st.write(
-                            "Comparando matrices e inyectando filas nuevas...")
+                        st.write("Comparando matrices e inyectando filas nuevas...")
 
-                        # 4. Desempaquetamos los DOS valores que ahora devuelve la función
-                        insertados, actualizados = sincronizar_datos_seguro(
+                        # 4. Única inyección para evitar el error de doble bloque
+                        actualizados_maestra, insertados_anomalias = sincronizar_datos_seguro(
                             cliente=cliente,
                             id_documento="1okof2eOnIif-JJhaMqUQspx5Q8Pc9-z7N2UmkLt90XA",
                             nombre_hoja="BD_Maestra_Solicitantes",
@@ -115,18 +110,24 @@ if check_password():
                         )
 
                         # 5. Cierre y resultados limpios contemplando ambos escenarios
-                        if insertados > 0 or actualizados > 0:
+                        if actualizados_maestra > 0 or insertados_anomalias > 0:
                             status.update(
-                                label=f"¡Éxito! ({insertados} nuevos, {actualizados} actualizados)",
+                                label=f"¡Éxito! ({actualizados_maestra} actualizados, {insertados_anomalias} anomalías)",
                                 state="complete", expanded=False
                             )
                             st.balloons()
-                            st.success(
-                                f"Se inyectaron {insertados} registros nuevos y se rellenaron {actualizados} expedientes de examen pendientes.")
+
+                            if actualizados_maestra > 0:
+                                st.success(
+                                    f"✅ Se rellenaron los datos de {actualizados_maestra} expedientes en la Base Maestra.")
+
+                            if insertados_anomalias > 0:
+                                st.warning(
+                                    f"⚠️ Se detectaron {insertados_anomalias} aspirantes en Forminator que NO realizaron el examen. Fueron trasladados a 'Casos_Extraordinarios_Curp'.")
                         else:
                             status.update(
                                 label="Sincronización Completada (Cero cambios)",
                                 state="complete", expanded=False
                             )
                             st.info(
-                                "No se inyectó ni actualizó información. Todos los perfiles ya están completos en la base maestra.")
+                                "No se actualizó información. Todos los perfiles detectados ya estaban sincronizados previamente.")
