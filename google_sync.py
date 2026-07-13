@@ -1,126 +1,70 @@
-# ============================================================================
-# ARCHIVO: google_sync.py
-# ============================================================================
-import gspread
-import streamlit as st
-from oauth2client.service_account import ServiceAccountCredentials
-import uuid  # <-- Importante: Librería nativa para generar folios únicos
+import json
+import requests
+
+# =====================================================================
+# RUTAS DE ENRUTAMIENTO (API GATEWAYS)
+# =====================================================================
+
+# ⚠️ URL DE LA TABLA 2 (ODS ALDO - Servidores Públicos - 26 Columnas)
+URL_ALDO = "https://script.google.com/macros/s/AKfycbz51-TP1VBzOUIa1P7RlkUF73q5LSfhEvz-ePY1evzH-tudNTYjBf6hLGXn96bslyf_xw/exec"
+
+# ⚠️ URL DE LA TABLA 3 (STAGING AREA GLOBAL - 17 Columnas)
+URL_GLOBAL = "https://script.google.com/macros/s/AKfycbzmOjGCQlDdZzuTTjrGJLv_VdjUojFnizDR1sGxPY3onJsuRC-SfPLf4IefPKXU3z3gFQ/exec"
 
 
-def conectar_sheets():
-    """Autenticación cifrada usando los secretos locales de Streamlit (Secrets)."""
-    scope = [
-        'https://spreadsheets.google.com/feeds',
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive.file',
-        'https://www.googleapis.com/auth/drive'
-    ]
+def obtener_calificaciones():
+    """Descarga el JSON con las calificaciones del Examen Diagnóstico a través del puente de Aldo."""
     try:
-        cred_dict = dict(st.secrets["gcloud_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            cred_dict, scope)
-        return gspread.authorize(creds)
+        payload = {"action": "obtener_calificaciones"}
+        headers = {'Content-Type': 'text/plain;charset=utf-8'}
+
+        response = requests.post(
+            URL_ALDO, data=json.dumps(payload), headers=headers)
+
+        if response.status_code == 200:
+            res = response.json()
+            if res.get("status") == "success":
+                return res.get("data", []), None
+            return [], res.get("message")
+        return [], f"Error HTTP: {response.status_code}"
     except Exception as e:
-        st.error(f"[-] Error de seguridad en conexión de API: {e}")
-        return None
+        return [], str(e)
 
 
-def sincronizar_datos_seguro(cliente, id_documento, nombre_hoja, df_nuevo):
-    """Inyección Inteligente: Rellena perfiles y manda anomalías a la bitácora estructurada."""
+def inyectar_datos_limpios(df_buenos, df_anomalias, ruta="aldo"):
+    """
+    Transmisor Aislado: Envía la data procesada a la ruta especificada.
+    El desacoplamiento evita la contaminación cruzada entre bases de datos.
+    """
     try:
-        hoja_maestra = cliente.open_by_key(id_documento).worksheet(nombre_hoja)
+        registros_buenos = df_buenos.fillna('').astype(str).to_dict(
+            orient='records') if not df_buenos.empty else []
+        registros_anomalias = df_anomalias.fillna('').astype(str).to_dict(
+            orient='records') if not df_anomalias.empty else []
 
-        # Validar que exista la hoja de anomalías
-        try:
-            hoja_anomalias = cliente.open_by_key(
-                id_documento).worksheet("Casos_Extraordinarios_Curp")
-        except Exception:
-            st.error(
-                "No se encontró la hoja 'Casos_Extraordinarios_Curp' en el documento.")
-            return 0, 0
+        if ruta == "global":
+            action_id = "ingesta_global"
+            url_destino = URL_GLOBAL
+        else:
+            action_id = "ingesta_etl"
+            url_destino = URL_ALDO
 
-        todos_los_datos = hoja_maestra.get_all_values()
-        encabezados_oficiales = todos_los_datos[0] if todos_los_datos else []
+        payload = {
+            "action": action_id,
+            "datos_validos": registros_buenos,
+            "datos_anomalias": registros_anomalias
+        }
 
-        if not encabezados_oficiales:
-            st.error("La hoja de destino está vacía o no tiene encabezados.")
-            return 0, 0
+        headers = {'Content-Type': 'text/plain;charset=utf-8'}
+        response = requests.post(
+            url_destino, data=json.dumps(payload), headers=headers)
 
-        # 1. Crear mapa de CURPs existentes en la Maestra
-        curps_existentes = {}
-        for i, fila in enumerate(todos_los_datos):
-            if i == 0:
-                continue
-            if len(fila) > 1:
-                curp = str(fila[1]).strip().upper()
-                nombre_existente = str(
-                    fila[2]).strip() if len(fila) > 2 else ""
-                correo_examen = str(fila[6]).strip() if len(fila) > 6 else ""
-
-                curps_existentes[curp] = {
-                    "fila_real": i + 1,
-                    "falta_datos_forminator": (nombre_existente == ""),
-                    "correo_examen": correo_examen
-                }
-
-        df_procesado = df_nuevo.fillna('').astype(str)
-        df_alineado = df_procesado[encabezados_oficiales]
-
-        anomalias_registros = []
-        actualizaciones_batch = []
-
-        # 2. Clasificación de Tráfico
-        for index, row in df_alineado.iterrows():
-            curp_alumno = str(row['CURP']).strip().upper()
-            if not curp_alumno:
-                continue
-
-            if curp_alumno in curps_existentes:
-                datos_existentes = curps_existentes[curp_alumno]
-
-                # ACTUALIZAMOS si el esqueleto del examen está vacío
-                if datos_existentes["falta_datos_forminator"]:
-                    fila_actualizar = datos_existentes["fila_real"]
-                    datos_a_inyectar = row.values.tolist()[:12]
-
-                    # No sobreescribir el correo validado del examen
-                    if datos_existentes["correo_examen"]:
-                        datos_a_inyectar[6] = datos_existentes["correo_examen"]
-
-                    actualizaciones_batch.append({
-                        'range': f'A{fila_actualizar}:L{fila_actualizar}',
-                        'values': [datos_a_inyectar]
-                    })
-            else:
-                # ESTRUCTURA DE BITÁCORA DE ANOMALÍAS (Solo 6 columnas)
-                id_unico = f"INC-{str(uuid.uuid4())[:6].upper()}"
-                nombre_forminator = str(row.get('Nombre Completo', ''))
-
-                fila_anomalia = [
-                    id_unico,                                       # 1. ID_Incidente
-                    curp_alumno,                                    # 2. CURP_Conflicto
-                    # 3. Tipo_Anomalía
-                    "Falta Examen (Sin registro en BD Maestra)",
-                    nombre_forminator,                              # 4. Nombre_Solicitante_A
-                    "",                                             # 5. Nombre_Solicitante_B
-                    "Pendiente"                                     # 6. Estatus_Resolución
-                ]
-                anomalias_registros.append(fila_anomalia)
-
-        # 3. Inyección de Anomalías (Excepciones)
-        insertados_anomalias = len(anomalias_registros)
-        if insertados_anomalias > 0:
-            hoja_anomalias.append_rows(
-                anomalias_registros, value_input_option='USER_ENTERED')
-
-        # 4. Inyección de Actualizaciones en Maestra
-        actualizados_maestra = len(actualizaciones_batch)
-        if actualizados_maestra > 0:
-            hoja_maestra.batch_update(
-                actualizaciones_batch, value_input_option='USER_ENTERED')
-
-        return actualizados_maestra, insertados_anomalias
-
+        if response.status_code == 200:
+            res = response.json()
+            if res.get("status") == "success":
+                # Rescata las 3 métricas que devuelve Apps Script
+                return res.get("insertados_maestra", 0), res.get("insertados_anomalias", 0), res.get("duplicados_omitidos", 0), None
+            return 0, 0, 0, res.get("message")
+        return 0, 0, 0, f"Error HTTP: {response.status_code}"
     except Exception as e:
-        st.error(f"Error crítico en Sincronización: {e}")
-        return 0, 0
+        return 0, 0, 0, str(e)
